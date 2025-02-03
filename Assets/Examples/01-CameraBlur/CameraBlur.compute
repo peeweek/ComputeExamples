@@ -1,0 +1,98 @@
+// We declare kernels here
+#pragma kernel Blur
+
+// Input Texture Size, in texels
+int TextureWidth;
+int TextureHeight;
+
+// Input Texture : Read Only
+Texture2D<float4> Input;
+
+// Output Texture : ReadWrite (created with RenderTexture.enableRandomReadWrite = true)
+RWTexture2D<float4> Result;
+
+// Declaring LDS Cache : we put all relevant pixels for the blur, from Main to LDS
+groupshared float lds_cacheR[64];
+groupshared float lds_cacheG[64];
+groupshared float lds_cacheB[64];
+groupshared float lds_cacheA[64];
+
+
+// Simple 5x5 median blur from LDS memory, called by every thread inside the blur window
+float4 BlurFromLDS(uint2 localThreadCoord)
+{
+    float r, g, b, a = 0.0;
+    uint idx;
+    for (uint i = localThreadCoord.x - 2; i <= localThreadCoord.x + 2; i++)
+    {
+        for (uint j = localThreadCoord.y - 2; j <= localThreadCoord.y + 2; j++)
+        {
+            idx = j * 8 + i;
+            r += lds_cacheR[idx];
+            g += lds_cacheG[idx];
+            b += lds_cacheB[idx];
+            a += lds_cacheA[idx];
+        }
+    }
+
+    // Return 1/25th of the accumulated value
+    return float4(r * 0.04, g * 0.04, b * 0.04, a * 0.04);
+}
+
+
+
+// Number of threads per Wavefront 
+// Should be 32 for nVidia, 64 for AMD, 
+// but we stick to 64 as it would be inefficient for AMD
+[numthreads(8,8,1)]
+void Blur(uint3 id : SV_GroupThreadID, uint3 groupId : SV_GroupID)
+{
+    // Non-separable Blur 4x4 effective pixel blocks, inside a 8x8 kernel
+    // 
+    // We use 8x8 to copy texture pixels* into LDS, 
+    // and only threads inside the 4x4 center will perform a 5x5 median blur, 
+    // using values outside the 4x4 window.
+    //
+    // Kernel looks like that:
+    // - : pixels outside the window
+    // X : pixels inside the blur window
+    // 
+    //           - - - - - - - - 
+    //           - - - - - - - - 
+    //           - - X X X X - -
+    //           - - X X X X - -
+    //           - - X X X X - -
+    //           - - X X X X - -
+    //           - - - - - - - - 
+    //           - - - - - - - -
+    //
+    
+    // First, compute coordinates in output space, clamping to zeroes
+    int2 outPixelCoord = groupId.xy * 4;
+    outPixelCoord += int2(id.x - 2, id.y - 2);
+
+    // ... and clamp to max texture size
+    outPixelCoord.x = clamp(outPixelCoord.x, 0, TextureWidth);
+    outPixelCoord.y = clamp(outPixelCoord.y, 0, TextureHeight);
+
+    // Then, we read input texture :
+    float4 inputColor = Input.Load(int3(outPixelCoord, 0));
+    // And perform copies into LDS
+    uint idx = id.y * 8 + id.x;
+    lds_cacheR[idx] = inputColor.x;
+    lds_cacheG[idx] = inputColor.y;
+    lds_cacheB[idx] = inputColor.z;
+    lds_cacheA[idx] = inputColor.w;
+    
+    // Perform a Wait until all threads have successfully stored their values into LDS
+    // This is called a MemoryBarrier, and is necessary to ensure LDS is correctly written
+    // As we will perform read 
+    GroupMemoryBarrierWithGroupSync();
+    
+    // Now, we perform computations only on threads that are inside the window
+    if (id.x > 1 && id.x < 6 && id.y > 1 && id.y < 6)
+    {
+        Result[outPixelCoord] = BlurFromLDS(id.xy);
+    }
+}
+
