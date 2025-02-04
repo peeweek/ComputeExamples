@@ -6,6 +6,7 @@ using UnityEngine.Rendering;
 [ExecuteAlways]
 public class CameraBlur : MonoBehaviour
 {
+    public MeshRenderer meshRenderer;
     public ComputeShader computeShader;
     public RenderTexture inTexture;
     public RenderTexture outTexture;
@@ -22,6 +23,11 @@ public class CameraBlur : MonoBehaviour
         outTexture = new RenderTexture(inTexture.width, inTexture.height, 0, RenderTextureFormat.ARGBFloat, RenderTextureReadWrite.Linear);
         outTexture.enableRandomWrite = true;
         outTexture.name = $"CameraBlur buffer {outTexture.width}x{outTexture.height}";
+
+        if(meshRenderer != null)
+        {
+            meshRenderer.sharedMaterial.SetTexture("_BaseMap", outTexture);
+        }
     }
 
     public void LateUpdate()

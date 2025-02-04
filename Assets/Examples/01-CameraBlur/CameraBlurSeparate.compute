@@ -1,0 +1,134 @@
+// We declare kernels here
+#pragma kernel SeparateBlur
+
+// Input Texture Size, in texels
+int TextureWidth;
+int TextureHeight;
+
+// Input Texture : Read Only
+Texture2D<float4> Input;
+
+// Output Texture : ReadWrite (created with RenderTexture.enableRandomReadWrite = true)
+RWTexture2D<float4> Result;
+
+// Declaring LDS Cache : we put all relevant pixels for the blur, from Main to LDS
+groupshared float lds_cacheR[64];
+groupshared float lds_cacheG[64];
+groupshared float lds_cacheB[64];
+groupshared float lds_cacheA[64];
+
+// Simple 5-tap median horizontal blur from LDS memory
+float4 HBlurFromLDS(uint2 localThreadCoord)
+{
+    float r, g, b, a = 0.0;
+    uint idx;
+    for (uint i = localThreadCoord.x - 2; i <= localThreadCoord.x + 2; i++)
+    {
+        idx = localThreadCoord.y * 8 + i;
+        r += lds_cacheR[idx];
+        g += lds_cacheG[idx];
+        b += lds_cacheB[idx];
+        a += lds_cacheA[idx];
+    }
+
+    return float4(r * 0.2, g * 0.2, b * 0.2, a * 0.2);
+}
+
+// Simple 5-tap median vertical blur from LDS memory, called by every column for pixels inside the blur window
+float4 VBlurFromLDS(uint2 localThreadCoord)
+{
+    float r, g, b, a = 0.0;
+    uint idx;
+    for (uint i = localThreadCoord.y - 2; i <= localThreadCoord.y + 2; i++)
+    {
+        idx = i * 8 + localThreadCoord.x;
+        r += lds_cacheR[idx];
+        g += lds_cacheG[idx];
+        b += lds_cacheB[idx];
+        a += lds_cacheA[idx];
+    }
+
+    return float4(r * 0.2, g * 0.2, b * 0.2, a * 0.2);
+}
+
+// Number of threads per Wavefront 
+// Should be 32 for nVidia, 64 for AMD, 
+// but we stick to 64 as it would be inefficient for AMD
+[numthreads(8,8,1)]
+void SeparateBlur(uint3 id : SV_GroupThreadID, uint3 groupId : SV_GroupID)
+{
+    // Separable Blur on 4x4 effective pixel blocks, inside a 8x8 kernel
+    // 
+    // We use 8x8 to copy texture pixels* into LDS, 
+    // and do 2 passes of blur. First a 5-horizontal.
+    // Wait with GroupMemoryBarrierWithGroupSync()
+    // Then do a vertical blur.
+    //
+    // It amounts to 10-tap separate, safe, instead of 25-tap on the other example
+    
+    // First, compute coordinates in output space, clamping to zeroes
+    int2 outPixelCoord = groupId.xy * 4;
+    outPixelCoord += int2(id.x - 2, id.y - 2);
+
+    // ... and clamp to max texture size
+    outPixelCoord.x = clamp(outPixelCoord.x, 0, TextureWidth);
+    outPixelCoord.y = clamp(outPixelCoord.y, 0, TextureHeight);
+
+    // Then, we read input texture :
+    float4 inputColor = Input.Load(int3(outPixelCoord, 0));
+    // And perform copies into LDS
+    uint idx = id.y * 8 + id.x;
+    lds_cacheR[idx] = inputColor.x;
+    lds_cacheG[idx] = inputColor.y;
+    lds_cacheB[idx] = inputColor.z;
+    lds_cacheA[idx] = inputColor.w;
+    
+    // Perform a Wait until all threads have successfully stored their values into LDS
+    // This is called a MemoryBarrier, and is necessary to ensure LDS is correctly written
+    // As we will perform read 
+    GroupMemoryBarrierWithGroupSync();
+    
+    // Now, we perform Horizontal Blur on pixels,
+    // called by every line for pixels, not limited to blur window, 
+    // as these pixels will account for Vertical Blur
+    //
+    //           - - X X X X - -
+    //           - - X X X X - -
+    //           - - X X X X - -
+    //           - - X X X X - -
+    //           - - X X X X - -
+    //           - - X X X X - -
+    //           - - X X X X - -
+    //           - - X X X X - -
+    
+    if (id.x > 1 && id.x < 6)
+    {
+        float4 color = HBlurFromLDS(id.xy);
+        lds_cacheR[idx] = color.r;
+        lds_cacheG[idx] = color.g;
+        lds_cacheB[idx] = color.b;
+        lds_cacheA[idx] = color.a;
+    }
+    
+    // As we will read values again in the next blur pass, we perform a
+    // groupMemory wait
+    GroupMemoryBarrierWithGroupSync();
+    
+    // Then we do Vertical Blur on Pixels,
+    // as these pixels will account for Vertical Blur
+    //
+    //           - - - - - - - - 
+    //           - - - - - - - - 
+    //           - - X X X X - -
+    //           - - X X X X - -
+    //           - - X X X X - -
+    //           - - X X X X - -
+    //           - - - - - - - - 
+    //           - - - - - - - -    
+    //
+    if (id.x > 1 && id.x < 6 && id.y > 1 && id.y < 6)
+    {
+        // No need to output to LDS Anymore, let's just write into Result
+        Result[outPixelCoord] = VBlurFromLDS(id.xy);
+    }
+}
