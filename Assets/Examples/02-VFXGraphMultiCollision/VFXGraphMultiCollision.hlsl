@@ -1,6 +1,7 @@
 //
 // Updates one particle, for a given collider
 //
+/// hidden
 void UpdatePositionAndVelocity(
                 inout float3 position, 
                 inout float3 velocity, 
