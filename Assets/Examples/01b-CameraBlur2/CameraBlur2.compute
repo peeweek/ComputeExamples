@@ -1,0 +1,60 @@
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel CSMain
+
+// Group Shared (Local Data Share)
+groupshared float lds_cacheR[64];
+groupshared float lds_cacheG[64];
+groupshared float lds_cacheB[64];
+groupshared float lds_cacheA[64];
+
+// Uniforms
+int width;
+int height;
+
+Texture2D<float4> Input;
+RWTexture2D<float4> Result;
+
+float4 GetColorFromLDS(uint2 id)
+{
+    uint index = id.x + id.y * 8;
+    return float4(lds_cacheR[index], lds_cacheG[index], lds_cacheB[index], lds_cacheA[index]);
+}
+
+void SetColorToLDS(uint2 id, float4 color)
+{
+    uint index = id.x + id.y * 8;
+    lds_cacheR[index] = color.x;
+    lds_cacheG[index] = color.y;
+    lds_cacheB[index] = color.z;
+    lds_cacheA[index] = color.w;
+}
+
+[numthreads(8,8,1)]
+void CSMain (uint3 id : SV_GroupThreadID, uint3 groupId : SV_GroupID)
+{
+    // Generate Coords
+    uint2 outId = (groupId.xy * 4) + id.xy - 2;
+    uint2 inID = outId;
+    inID = clamp(inID, 0, uint2(width-1, height-1));
+    
+    // Cache Color to LDS
+    SetColorToLDS(id.xy, Input[inID]);
+    
+    // Thread Lock : Wait for LDS to be written
+    GroupMemoryBarrierWithGroupSync();
+    
+    // Do the blur, only on the 4x4 window at the center of the kernel
+    if(id.x > 1 && id.y > 1 && id.x < 6 && id.y < 6)
+    {
+        float4 color = 0.0;
+        
+        // 5x5 tap blur with no convolution (1.0 weights)
+        for (int i = (int) id.x - 2; i <= (int) id.x + 2; i++)
+            for (int j = (int) id.y - 2; j <= (int) id.y + 2; j++)
+            {
+                color += GetColorFromLDS(uint2(i, j));
+            }
+
+        Result[outId] = color *= 0.04;
+    }
+}
