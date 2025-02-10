@@ -1167,7 +1167,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: e9e1c3fe63969bf4c97f01fe1eb4568e, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  particleCount: 10584
+  particleCount: 586
 --- !u!73398921 &1875791988
 VFXRenderer:
   serializedVersion: 1
@@ -1239,7 +1239,7 @@ VisualEffect:
       m_Array: []
     m_Int:
       m_Array:
-      - m_Value: 10584
+      - m_Value: 586
         m_Name: ParticleCount
         m_Overridden: 1
     m_Matrix4x4f:
