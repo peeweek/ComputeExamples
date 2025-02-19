@@ -7,15 +7,32 @@
 #pragma kernel PFinish
 #pragma kernel Jacobi1
 #pragma kernel Jacobi2
+#pragma kernel Offset
+
+// Structure for input : stride sizeof(float) * 5
+struct FluidInputData
+{
+    float2 position;
+    float2 velocity;
+    float radius;
+};
+
+// Offset (this frame)
+int offsetU;
+int offsetV;
+
+// Structured Buffer : input
+StructuredBuffer<FluidInputData> FluidInput;
+int FluidInputCount;
 
 // Common parameter
 float Time;
 float DeltaTime;
 
 // External force
-float2 ForceOrigin;
-float2 ForceVector;
-float ForceExponent;
+//float2 ForceOrigin;
+//float2 ForceVector;
+//float ForceExponent;
 
 // U (velocity field)
 Texture2D<float2> U_in;
@@ -49,6 +66,29 @@ Texture2D<float2> X2_in;
 Texture2D<float2> B2_in;
 RWTexture2D<float2> X2_out;
 
+// Offset Simulation
+[numthreads(8, 8, 1)]
+void Offset(uint2 tid : SV_DispatchThreadID)
+{
+    uint2 dim;
+    W_out.GetDimensions(dim.x, dim.y);
+    
+    int2 oid = int2(tid.x, tid.y);
+    
+    if (oid.x <= offsetU + 1)
+        W_out[tid] = 0;
+    else if (oid.y <= offsetV + 1) 
+        W_out[tid] = 0;
+    else if ((oid.x + offsetU + 1) > (int) dim.x - 1)
+        W_out[tid] = 0;
+    else if ((oid.y + offsetV + 1) > (int) dim.y - 1)
+        W_out[tid] = 0;
+    else
+    {
+        W_out[tid] = W_in[tid + uint2(offsetU, offsetV)];
+    }  
+}
+
 // Advect step
 [numthreads(8, 8, 1)]
 void Advect(uint2 tid : SV_DispatchThreadID)
@@ -69,10 +109,22 @@ void Force(uint2 tid : SV_DispatchThreadID)
     uint2 dim;
     W_out.GetDimensions(dim.x, dim.y);
 
-    float2 pos = (tid + 0.5 - dim * 0.5) / dim.y;
-    float amp = exp(-ForceExponent * distance(ForceOrigin, pos));
+    float2 force = float2(0.0, 0.0);
+    
+    // Add all forces
+    for (int i = 0; i < FluidInputCount; i++)
+    {
+        FluidInputData data = FluidInput[i];
+        
+        float2 pos = ((float2) tid) / dim;
+        float d = distance(pos, data.position);
+        float mask = step(d, data.radius);
+        float l = length(data.velocity);
+        float2 expand = normalize(pos - data.position) * mask * l;
+        force += (mask * data.velocity) + (expand);
+    }
 
-    W_out[tid] = W_in[tid] + ForceVector * amp;
+    W_out[tid] = W_in[tid] + force;
 }
 
 // Setup for Project step (divW calculation)
